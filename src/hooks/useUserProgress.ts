@@ -5,6 +5,7 @@ export type UserProgress = {
   totalXP: number
   currentStreak: number
   lastActiveDate: string
+  currentExerciseIndex: number
 }
 
 const STORAGE_KEY = 'pylen:user-progress'
@@ -39,6 +40,7 @@ const readInitialState = (): UserProgress => {
       totalXP: 0,
       currentStreak: 0,
       lastActiveDate: formatDateKey(new Date()),
+      currentExerciseIndex: 0,
     }
   }
 
@@ -50,6 +52,7 @@ const readInitialState = (): UserProgress => {
         totalXP: 0,
         currentStreak: 0,
         lastActiveDate: formatDateKey(new Date()),
+        currentExerciseIndex: 0,
       }
     }
 
@@ -59,6 +62,7 @@ const readInitialState = (): UserProgress => {
       totalXP: typeof parsed.totalXP === 'number' ? parsed.totalXP : 0,
       currentStreak: 0,
       lastActiveDate: typeof parsed.lastActiveDate === 'string' ? parsed.lastActiveDate : formatDateKey(new Date()),
+      currentExerciseIndex: typeof parsed.currentExerciseIndex === 'number' ? parsed.currentExerciseIndex : 0,
     }
 
     normalized.currentStreak = calculateStreak(normalized.lastActiveDate)
@@ -69,6 +73,7 @@ const readInitialState = (): UserProgress => {
       totalXP: 0,
       currentStreak: 0,
       lastActiveDate: formatDateKey(new Date()),
+      currentExerciseIndex: 0,
     }
   }
 }
@@ -120,9 +125,17 @@ export function useUserProgress() {
     })
   }, [])
 
+  const setCurrentExerciseIndex = useCallback((index: number) => {
+    setProgress((previous) => ({
+      ...previous,
+      currentExerciseIndex: index,
+    }))
+  }, [])
+
   return {
     progress,
     markActiveDay,
     completeExercise,
+    setCurrentExerciseIndex,
   }
 }

@@ -5,7 +5,6 @@ import {
   ArrowLeft,
   ArrowRight,
   BookOpen,
-  Check,
   Code2,
   Play,
   RotateCcw,
@@ -24,16 +23,15 @@ import './App.css'
 const totalExercises = allExercises.length
 
 function App() {
-  const { progress, markActiveDay, completeExercise } = useUserProgress()
+  const { progress, markActiveDay, completeExercise, setCurrentExerciseIndex } = useUserProgress()
   const [view, setView] = useState<'dashboard' | 'workspace'>('workspace')
-  const [exerciseIndex, setExerciseIndex] = useState(0)
+  const [exerciseIndex, setExerciseIndex] = useState(() => progress.currentExerciseIndex)
   const [code, setCode] = useState(allExercises[0].starterCode)
   const [terminalOutput, setTerminalOutput] = useState('')
   const [runtimeReady, setRuntimeReady] = useState(false)
   const [runtimeLoading, setRuntimeLoading] = useState(true)
   const [runtimeStatusText, setRuntimeStatusText] = useState('Loading Python engine...')
   const [isRunning, setIsRunning] = useState(false)
-  const [isSubmitting, setIsSubmitting] = useState(false)
   const [status, setStatus] = useState<'idle' | 'success' | 'error'>('idle')
   const [hintOpen, setHintOpen] = useState(false)
   const [hintIndex, setHintIndex] = useState(0)
@@ -55,6 +53,10 @@ function App() {
   useEffect(() => {
     markActiveDay()
   }, [markActiveDay])
+
+  useEffect(() => {
+    setCurrentExerciseIndex(exerciseIndex)
+  }, [exerciseIndex, setCurrentExerciseIndex])
 
   useEffect(() => {
     setCode(currentExercise.starterCode)
@@ -144,7 +146,6 @@ function App() {
     setWaitingForInput(false)
     setTerminalInput('')
     setIsRunning(false)
-    setIsSubmitting(false)
   }
 
   const handleEditorMount: OnMount = (editor) => {
@@ -174,7 +175,6 @@ function App() {
     setTerminalOutput('')
 
     try {
-      resetPyodideWarmup()
       const runtime = await startPyodideWarmup()
       const result = await executePythonCode(code, runtime)
 
@@ -182,44 +182,13 @@ function App() {
         appendTerminalOutput('Code ran successfully. No output was printed.')
       }
 
-      setStatus(result?.ok ? 'success' : 'error')
-    } catch (error) {
-      setStatus('error')
-      appendTerminalOutput(error instanceof Error ? error.message : 'Execution failed.')
-    } finally {
-      setIsRunning(false)
-    }
-  }
-
-  const handleSubmit = async () => {
-    if (!runtimeReady) {
-      setTerminalOutput('Initializing Python Engine...')
-      return
-    }
-
-    setIsSubmitting(true)
-    setStatus('idle')
-    setToastVisible(false)
-    setWaitingForInput(false)
-    setTerminalInput('')
-    setTerminalOutput('')
-
-    try {
-      resetPyodideWarmup()
-      const runtime = await startPyodideWarmup()
-      const execution = await executePythonCode(code, runtime)
-      const executionOutput = (execution?.stdout || execution?.output || 'Code ran successfully. No output was printed.').trim()
-      if (executionOutput) {
-        appendTerminalOutput(executionOutput)
+      if (!result?.ok) {
+        setStatus('error')
+        return
       }
 
-      const result = await validateExercise(code, currentExercise, runtime)
-      const validationOutput = (execution?.stdout || result?.output || 'Code ran successfully. No output was printed.').trim()
-      if (validationOutput && validationOutput !== executionOutput) {
-        appendTerminalOutput(validationOutput)
-      }
-
-      if (result.passed) {
+      const validation = await validateExercise(code, currentExercise, runtime, result)
+      if (validation.passed) {
         setStatus('success')
         setExercisePassed(true)
         setToastVisible(false)
@@ -238,11 +207,9 @@ function App() {
       setToastVisible(true)
     } catch (error) {
       setStatus('error')
-      setExercisePassed(false)
-      setToastVisible(true)
-      setTerminalOutput(error instanceof Error ? error.message : 'Submission failed.')
+      appendTerminalOutput(error instanceof Error ? error.message : 'Execution failed.')
     } finally {
-      setIsSubmitting(false)
+      setIsRunning(false)
     }
   }
 
@@ -260,7 +227,7 @@ function App() {
   const terminalStatus = runtimeReady
     ? waitingForInput
       ? 'WAITING FOR INPUT'
-      : isRunning || isSubmitting
+      : isRunning
         ? 'RUNNING'
         : exercisePassed
           ? 'PASSED'
@@ -299,10 +266,6 @@ function App() {
 
     setWaitingForInput(false)
     setTerminalInput('')
-    setIsRunning(false)
-    setIsSubmitting(false)
-    setStatus('idle')
-    appendTerminalOutput(terminalInput)
   }
 
   const handleHintToggle = () => {
@@ -487,15 +450,6 @@ function App() {
                     </button>
                     <button
                       type="button"
-                      onClick={handleSubmit}
-                      disabled={isSubmitting || runtimeLoading}
-                      className="neo-button flex items-center gap-2 bg-[#22C55E] px-4 py-2 text-sm"
-                    >
-                      <Check size={16} />
-                      {toastVisible ? 'Try Again' : 'Submit Code'}
-                    </button>
-                    <button
-                      type="button"
                       onClick={handleReset}
                       className="neo-button neo-button-secondary px-3 py-2 text-sm"
                     >
@@ -574,7 +528,7 @@ function App() {
               <div className="relative flex items-center gap-3">
                 {toastVisible && (
                   <div className="absolute bottom-[52px] left-0 right-0 mx-auto w-[260px] border-2 border-black bg-[#FEE2E2] px-3 py-2 text-center text-sm font-black text-slate-900 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
-                    Code didn't match the expected output. Try again!
+                    Run completed, but the program does not meet all exercise requirements yet.
                   </div>
                 )}
 

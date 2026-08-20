@@ -11,6 +11,8 @@ export type Exercise = {
   storyChallenge?: string
   starterCode: string
   expectedOutputPattern?: string
+  instructions?: string
+  validationType?: string
   hints?: Array<{ level: string; text: string }>
   hintLevels?: string[]
   xpReward?: number
@@ -22,6 +24,7 @@ export type PythonExecutionResult = {
   stdout: string
   stderr: string
   output: string
+  inputs?: string[]
 }
 
 export type ValidationResult = {
@@ -53,6 +56,7 @@ function normalizePythonExecutionResult(
       stdout: value.stdout ?? '',
       stderr: value.stderr ?? '',
       output: value.output ?? value.stdout ?? fallbackOutput,
+      inputs: value.inputs,
     }
   }
 
@@ -66,12 +70,16 @@ function normalizePythonExecutionResult(
 
 export class PyodideRuntime {
   public worker: Worker
+  private readonly stdinBuffer: Uint8Array
+  private readonly stdinState: Int32Array
   private pendingExecution: PendingExecution | null = null
   private executionTimeoutHandle: number | null = null
   private readonly executionTimeoutMs = 30000
 
-  constructor(worker: Worker) {
+  constructor(worker: Worker, stdinBuffer: SharedArrayBuffer, stdinState: SharedArrayBuffer) {
     this.worker = worker
+    this.stdinBuffer = new Uint8Array(stdinBuffer)
+    this.stdinState = new Int32Array(stdinState)
 
     this.worker.addEventListener('message', (event) => {
       const message = event.data as {
@@ -82,6 +90,7 @@ export class PyodideRuntime {
         stdout?: string
         stderr?: string
         output?: string
+        inputs?: string[]
         message?: string
       }
 
@@ -117,6 +126,7 @@ export class PyodideRuntime {
           stdout: message.stdout ?? '',
           stderr: message.stderr ?? '',
           output: message.output ?? '',
+          inputs: message.inputs,
         }
 
         this.pendingExecution?.resolve(result)
@@ -145,6 +155,9 @@ export class PyodideRuntime {
     this.clearExecutionTimeout()
     this.executionTimeoutHandle = window.setTimeout(() => {
       this.terminate()
+      if (pyodideInstance === this) {
+        pyodideInstance = null
+      }
       this.pendingExecution?.resolve({
         ok: false,
         stdout: '',
@@ -161,7 +174,8 @@ export class PyodideRuntime {
       this.pendingExecution = { resolve, reject }
       this.startExecutionTimeout()
 
-      this.worker.postMessage({ type: 'run', code: code && code.trim() ? code : 'print("")' })
+      const safeCode = code && code.trim() ? code : 'print("")'
+      this.worker.postMessage({ type: 'run', code: safeCode })
     })
   }
 
@@ -172,7 +186,12 @@ export class PyodideRuntime {
 
   provideInput(value: string): void {
     this.startExecutionTimeout()
-    this.worker.postMessage({ type: 'stdin', value })
+    const bytes = new TextEncoder().encode(value ?? '')
+    this.stdinBuffer.fill(0)
+    this.stdinBuffer.set(bytes.slice(0, this.stdinBuffer.byteLength - 1))
+    Atomics.store(this.stdinState, 1, Math.min(bytes.length, this.stdinBuffer.byteLength - 1))
+    Atomics.store(this.stdinState, 0, 1)
+    Atomics.notify(this.stdinState, 0)
   }
 
   terminate(): void {
@@ -210,17 +229,20 @@ export async function ensurePyodide(): Promise<PyodideRuntime> {
 
     worker.postMessage({ type: 'init', stdinBuffer, stdinState })
 
-    pyodideInstance = new PyodideRuntime(worker)
+    pyodideInstance = new PyodideRuntime(worker, stdinBuffer, stdinState)
     return pyodideInstance
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unable to load Pyodide worker.'
-    throw new Error(`Pyodide failed to initialize: ${message}`)
+    throw new Error(`Pyodide failed to initialize: ${message}`, { cause: error })
   }
 }
 
 export async function executePythonCode(
   code: string,
-  runtime: Partial<PyodideRuntime> & { runPythonAsync?: (code: string) => Promise<string | PythonExecutionResult>; executeCode?: (code: string) => Promise<PythonExecutionResult | string> },
+  runtime: Partial<PyodideRuntime> & {
+    runPythonAsync?: (code: string) => Promise<string | PythonExecutionResult>
+    executeCode?: (code: string) => Promise<PythonExecutionResult | string>
+  },
 ): Promise<PythonExecutionResult> {
   const safeCode = code && code.trim() ? code : 'print("")'
 
@@ -239,28 +261,28 @@ export async function executePythonCode(
 
 export async function validateExercise(
   code: string,
-  exercise: { expectedOutputPattern: string },
+  exercise: { instructions?: string },
   runtime: PyodideRuntime,
+  execution?: PythonExecutionResult,
 ): Promise<ValidationResult> {
-  const execution = await executePythonCode(code, runtime)
+  const result = execution ?? (await executePythonCode(code, runtime))
 
-  if (!execution.ok) {
+  if (!result.ok) {
     return {
       passed: false,
-      output: execution.output,
+      output: result.output,
     }
   }
 
-  const { outputMatches } = await import('./validateOutput')
-  const actual = execution.stdout
-  const expected = exercise.expectedOutputPattern
+  const { outputMatchesValidation } = await import('./validateOutput')
+  const actual = result.stdout
 
-  const passed = outputMatches(expected, actual)
+  const passed = outputMatchesValidation(code, actual, exercise.instructions)
 
   return {
     passed,
     output: passed
-      ? 'Nice work. Your output matches the expected result.'
-      : 'Code did not match the expected output. Try again!',
+      ? 'Nice work. Your program meets the exercise requirements.'
+      : 'Your program ran, but it does not meet all exercise requirements yet.',
   }
 }

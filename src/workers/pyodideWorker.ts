@@ -14,10 +14,22 @@ type WorkerInputMessage = {
   value: string
 }
 
-let pyodide: any = null
+type PyodideRuntime = {
+  runPythonAsync: (code: string) => Promise<unknown>
+  setStdout: (options: { batched: (text: string) => void }) => void
+  setStderr: (options: { batched: (text: string) => void }) => void
+  setStdin: (options: { isatty: boolean; stdin: () => string }) => void
+}
+
+type PyodideModule = {
+  loadPyodide: (options: { indexURL: string; stdin: () => string }) => Promise<PyodideRuntime>
+}
+
+let pyodide: PyodideRuntime | null = null
 let stdinBuffer: Uint8Array | null = null
 let stdinState: Int32Array | null = null
 let pendingInputPrompt = 'Enter: '
+let currentExecutionInputs: string[] = []
 
 function extractInputPrompt(code: string): string {
   const match = code.match(/input\s*\(\s*(?:"([^"]*)"|'([^']*)'|`([^`]*)`)/s)
@@ -52,7 +64,7 @@ async function initPyodide() {
   }
 
   try {
-    const dynamicImport = new Function('url', 'return import(url)') as (url: string) => Promise<any>
+    const dynamicImport = new Function('url', 'return import(url)') as (url: string) => Promise<PyodideModule>
     const pyodideModule = await dynamicImport('https://cdn.jsdelivr.net/pyodide/v0.25.0/full/pyodide.mjs')
     pyodide = await pyodideModule.loadPyodide({
       indexURL: 'https://cdn.jsdelivr.net/pyodide/v0.25.0/full/',
@@ -72,6 +84,7 @@ async function initPyodide() {
 
         const length = Atomics.load(state, 1)
         const value = new TextDecoder().decode(buffer.slice(0, length))
+        currentExecutionInputs.push(value)
 
         Atomics.store(state, 0, 0)
         Atomics.store(state, 1, 0)
@@ -85,7 +98,7 @@ async function initPyodide() {
     postMessageToMain('error', {
       message: `Pyodide failed to load in the sandbox: ${message}`,
     })
-    throw new Error(`Pyodide failed to load in the sandbox: ${message}`)
+    throw new Error(`Pyodide failed to load in the sandbox: ${message}`, { cause: error })
   }
 
   pyodide.setStdout({
@@ -118,6 +131,7 @@ async function initPyodide() {
 
       const length = Atomics.load(state, 1)
       const value = new TextDecoder().decode(buffer.slice(0, length))
+      currentExecutionInputs.push(value)
 
       Atomics.store(state, 0, 0)
       Atomics.store(state, 1, 0)
@@ -166,6 +180,7 @@ self.onmessage = async (event: MessageEvent<WorkerInitMessage | WorkerExecutionM
       })
 
       const code = message.code && message.code.trim() ? message.code : 'print("")'
+      currentExecutionInputs = []
       await runtime.runPythonAsync(code)
 
       postMessageToMain('result', {
@@ -173,6 +188,7 @@ self.onmessage = async (event: MessageEvent<WorkerInitMessage | WorkerExecutionM
         stdout,
         stderr,
         output: stdout.trim() || 'Code ran successfully. No output was printed.',
+        inputs: currentExecutionInputs,
       })
     } catch (error) {
       const messageText = error instanceof Error ? error.message : String(error)
